@@ -172,7 +172,7 @@ item.error <- rmse(test.ratings$rating, item.predict.out)
 
 ```
 
-The average RMSE for the item-based recommendation system is `r user.error`.
+The average RMSE for the item-based recommendation system is `r item.error`.
 
 ## Conclusion
 Given this 100K movie dataset, the accuracy of the user-based recommendation system is better than item-based recomendation system.
