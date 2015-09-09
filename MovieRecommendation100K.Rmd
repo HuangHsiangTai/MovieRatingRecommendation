@@ -1,0 +1,184 @@
+---
+title: "Movie Recommendation"
+author: "Hsiang-Tai Huang"
+date: "Wednesday, September 9, 2015"
+output: pdf_document
+---
+
+##Executive Summary
+I use the movie rating dataset provided by GroupLens Research to evaluate the performace of two prediction models which includes user-Based recommendation system and item-based recommendation system. Based on the evaluation resulf of the [MovieLens 100k dataset](http://files.grouplens.org/datasets/movielens/ml-100k.zip), the RMSE(root mean square error) of user-based recommendation is smaller than  item-based recommendation.
+
+##Preprocessing data 
+At first, I try to download training dataset and testing dataset from the GroupLens Research website. The ua.base file stands for training dataset and ua.test stand for testing data. Those two datsets includes userid, movieid, rating, and timestamp column.
+
+```{r,loaddata, cache=TRUE}
+rm(list = ls())
+#load ua.base dataset
+rating.header <- c('userid','movieid','rating','timestamp')
+train.ratings <- do.call(rbind, strsplit(readLines("./ml-100k/ua.base"), '\t', fixed=T))
+train.ratings <- data.frame(apply(train.ratings, 2, as.integer))
+colnames(train.ratings) <- rating.header
+
+#load ua.test dataset
+test.ratings <- do.call(rbind, strsplit(readLines("./ml-100k/ua.test"), '\t', fixed=T))
+test.ratings <- data.frame(apply(test.ratings, 2, as.integer))
+colnames(test.ratings) <- rating.header
+
+```
+
+After loading data into data frame, I also check the missing values in the training dataset and test dataset.
+```{r,cleanData, dependson="loaddata"}
+train.na.num <-sum(is.na(train.ratings))
+test.na.num <-sum(is.na(test.ratings))
+```
+The na amount in training dataset is `r train.na.num` and the na amount in test dataset is `r test.na.num`. I don't need to take further step to clean the dataset. 
+
+
+## Explore data in training dataset
+After cleaning the data, I start to explore the data and draw a plot to show the histogram of rating as the following.
+
+```{r ratingDistribution, dependson = "loaddata", cache = TRUE}
+library(ggplot2)
+qplot(rating, data = train.ratings ,main = "Histogram of ratings",binwidth= 0.5, xlab = "Rating")
+mean.rate <-mean(train.ratings$rating)
+```
+
+The mean rate would be `r mean.rate`. This value would be used when we don't have any hint to predict user's rating at some specific situation.
+
+## Build recommendation system
+I will build up two recommendation systems including user-based recommendation system and item-based recommendation system.
+Before that, I will initalize the common parameters,matrices and functions. users.movies.mtx would be the most important matrix in this report. Each row of the users.movies.mtx stands for one userid, and each column of the users.movies.mtx stands for one movieid. The rating value which is rated by the User i for the movie j is stored in [i,j]. Besides that, rmse will be used to evalute the prediction accuracy. 
+
+```{r, initRecommendation, dependson= "ratingDistribution", cache=TRUE}
+recommend.num <- 5
+train.users <- sort(unique(train.ratings[, rating.header[1]]))
+train.movies <- sort(unique(train.ratings[, rating.header[2]]))
+# build up users.movies matrix
+users.movies.mtx <- matrix(NA, nrow = length(train.users), ncol = length(train.movies))
+update.user.movies<- function (x) {
+  user.idx <- which((train.users %in% x[1]))
+  movie.idx <- which((train.movies %in% x[2]))
+  users.movies.mtx[user.idx, movie.idx] <<- x[3]
+}
+result <- apply(train.ratings, 1, update.user.movies)
+
+rmse <- function(right, predict) {
+  sqrt(sum((right - predict)^2)/length(right))
+}
+
+```
+
+###User-based recommendation system
+
+In the user-based recommendation system, I have set up the user similarity function. This user similarity function would generate the output value which define how closer for two different user. I choose Cosine-based Similarity as my similarity function. After that, I would build up the user similarity matrix. Assumed I have $m$ users and the user similarity matrix would be $mxm$ and store the similarity cefficient in this matrix.
+
+``` {r, userBased, dependson= "initRecommendation", cache=TRUE}
+
+#set similarity function
+user.sim.func <- function(i, j) {
+  (sum(users.movies.mtx[i,] * users.movies.mtx[j,],na.rm =TRUE)) / 
+    (sqrt(sum(users.movies.mtx[i,]^2,na.rm = TRUE)) * 
+     sqrt(sum(users.movies.mtx[j,]^2, na.rm = TRUE)))
+}
+#build up the user similarity matrix
+user.similarity <- matrix(NA, nrow=length(train.users), ncol=length(train.users))
+for(i in 1:length(train.users)){
+        for(j in i:length(train.users)){
+          if( i != j){
+            user.similarity[i, j] <- do.call(user.sim.func, list(i = i, j = j))
+            user.similarity[j, i] <- user.similarity[i, j]
+          }
+        }
+}
+
+```
+
+###Item-based recommendation system
+In the item-based recommendation system, I have set up the user similarity function. This item similarity function would generate the output value which define how closer for two different item based on user's rating. I choose Cosine-based Similarity as my similarity function.After that, I would build up the item similarity matrix. Assumed I have $n$ items and the item similarity matrix would be $nxn$ and store the similarity cefficient in this matrix.
+
+```{r, itemBased, dependson= "initRecommendation", cache=TRUE}
+#set item similarity function
+item.sim.func <- function(i, j) {
+  (sum(users.movies.mtx[,i] *users.movies.mtx[,j], na.rm = TRUE))/
+    (sqrt(sum(users.movies.mtx[,j]^2, na.rm = TRUE)) * 
+     sqrt(sum(users.movies.mtx[,j]^2, na.rm = TRUE)))
+}
+
+#build up item similarity matrix
+item.similarity <- matrix(NA, nrow=length(train.movies), ncol=length(train.movies))
+for(i in 1:length(train.movies)){
+  for(j in i:length(train.movies)){
+    if( i != j){
+            item.similarity[i, j] <- item.sim.func(i,j)
+            item.similarity[j, i] <- item.similarity[i, j]
+    } 
+  }
+}  
+```
+
+##Predict and evaluate test dataset
+I use the test data set to evaluate those two recommendation system. I also set the total amount of recommended movie
+is  `r recommend.num`.
+
+### Evaluate user-based recommendation
+I define the function named user.predict.rate. Given userid,moiveid and recommended movie amount(k), I will calculate the K users who had top-5 high similairity with given userid and also rate for this movieid. I will weight rating score and get the predicted rating values. In some special case, I could not get the predicted rating value, I adopt the average rating value from the training dataset as the default rating score.  
+
+```{r, userBasedEvaluation, dependson = "userBased", cache=TRUE}
+user.predict.rate <- function(uid, mid, k) {
+  # Find the user's k nearest neighbour who have already rated movies
+  user.rate <- data.frame(user.similarity[uid, ], users.movies.mtx[, mid])
+  user.rate <- user.rate[complete.cases(user.rate),]
+  user.rate <- user.rate[order(user.rate[, 1], decreasing = TRUE),]
+  if(dim(user.rate)[1] == 0) {
+    mean.rate  
+  } else {
+    top.k <- head(user.rate, k)
+    if(sum(abs(top.k[,1])) == 0) {
+      mean(top.k[,2])
+    } else {
+      sum(top.k[,1] * top.k[,2])/sum(abs(top.k[,1]))
+    }
+  }
+}
+
+user.predict.out<- apply(test.ratings, 1, function(x) {round(user.predict.rate(x[1],x[2],recommend.num), 5)})
+user.error <- rmse(test.ratings$rating, user.predict.out)
+```
+
+The average RMSE for the user-based recommendation system is `r user.error`.
+
+### Evaluate item-based recommendation
+I define the function named item.predict.rate. Given userid,moiveid and recommended movie amount(k), I will calculate the K movies which had top-5 high similairity with given movie and also are rated by this userid. I will weight rating score and get the predicted rating values. In some special case, I could not get the predicted rating value, I adopt the average rating value from the training dataset as the default rating score.  
+
+```{r, itemBasedEvaluation}
+item.predict.rate <- function(uid, mid, k) {
+  item.rate <- data.frame(item.similarity[mid, ], users.movies.mtx[uid, ])
+  item.rate <- item.rate[complete.cases(item.rate),]
+  item.rate <- item.rate[order(item.rate[, 1], decreasing = TRUE),]
+  if(dim(item.rate)[1] == 0) {
+    mean.rate  
+  } else {
+    top.k <- head(item.rate, k)
+    if(sum(abs(top.k[,1])) == 0) {
+      mean(top.k[,2])
+    } else {
+      sum(top.k[,1] * top.k[,2])/sum(abs(top.k[,1]))
+    }
+  }
+  
+}  
+item.predict.out<- apply(test.ratings, 1, function(x) {round(item.predict.rate(x[1],x[2],recommend.num), 5)})
+item.error <- rmse(test.ratings$rating, item.predict.out)
+
+```
+
+The average RMSE for the item-based recommendation system is `r user.error`.
+
+## Conclusion
+Given this 100K movie dataset, the accuracy of the user-based recommendation system is better than item-based recomendation system.
+
+## Further work
+This dataset also include u.user and u.item. u.user includes more user information including gender,age and occupation. u.item includes more movie information include genre. In the user-based recommendation system, we can make use of the u.user and redefine similarity function. If we can consider gender and age information into our similarity function, we can get the higher prediction accuracy. For the same purpose, we also can consider genre attribute in the item-based recommendation system.
+
+##Reference
+[Item-Based Collaborative Filtering Recommendation Algorithms](http://www.ra.ethz.ch/cdstore/www10/papers/pdf/p519.pdf)
